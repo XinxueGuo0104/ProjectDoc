@@ -1,0 +1,511 @@
+---
+title: "Report title"
+subtitle: "Subtitle that indicates findings"
+author: "Report prepared for MINGAR by [consulting company name]"
+date: 2022-04-07
+lang: "en"
+output:
+  pdf_document:
+    template: report.tex
+    toc: true
+    toc_depth: 2
+titlepage: true
+titlepage-color: "6C3082"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "FFFFFF"
+titlepage-rule-height: 2
+---
+
+```{r, message = FALSE,warning=FALSE, echo= FALSE}
+library(tidyverse)
+library(lme4)
+library(rvest)
+library(polite)
+library(lmtest)
+# this should suppress all code and messages
+knitr::opts_chunk$set(include= FALSE)
+```
+
+\newpage
+# Executive summary
+
+
+The social media team of Mingar company clearly indicates there are many complaints that the device are performing poorly for dark skin customers, especially the sleep score. They take this event seriously and would like to investigate whether the device are actually performance poorly for dark-skin customers.
+
+By exploratory the data analysis, we notice the the customers' skin and device be the important factors can influence the sleep score and the device performance. The flag can represent the device performance. 
+
+There are some key findings: 
+
+- For dark-skin customers with device Active Alpha, the expect value of flag occurrences per duration is 0.033. \
+
+- For light skin customers with device Active Alpha, the mean of flag occurrences per duration is 0.003  \
+
+- The expected value of flag occurrences per duration for dark-skin customers with Run 7 Plus smaller than dark-skin customers with Run 875 device 0.008118. 
+
+- The customers' skin is the significant factor that can affect the flag occurrences per sleep duration, and the device be another factor affact the flag occurrences. 
+
+```{r}
+## Loading client data
+cust_dev=read_rds("data-raw/cust_dev.Rds")
+cust_sleep=read_rds("data-raw/cust_sleep.Rds")
+customer=read_rds("data-raw/customer.Rds")
+device=read_rds("data-raw/device.Rds")
+```
+
+
+
+```{r}
+
+##Getting external data
+
+## Web scraping industry data
+
+# Note: In adapting this for your code, 
+# please ensure all libraries are in a setup chunk at the beginning
+
+# These are the libraries I find useful for webscraping
+
+url <- "https://fitnesstrackerinfohub.netlify.app/."
+
+# Make sure this code is updated appropriately to provide 
+# informative user_agent details
+target <- bow(url,
+              user_agent = "xinxue.guo@mail.utoronto.ca for STA303/1002 project",
+              force = TRUE)
+
+# Any details provided in the robots text on crawl delays and 
+# which agents are allowed to scrape
+target
+
+html <- scrape(target)
+
+device_data <- html %>% 
+  html_elements("table") %>% 
+  html_table() %>% 
+  pluck(1) # added, in case you're getting a list format
+
+```
+
+
+
+```{r}
+## Census API
+
+#install.packages("cancensus")
+library(cancensus)
+
+
+options(cancensus.api_key = "CensusMapper_23fa7456f28ecd8dd76ae32e6127278d",
+        cancensus.cache_path = "cache") # this sets a folder for your cache
+
+
+# get all regions as at the 2016 Census (2020 not up yet)
+regions <- list_census_regions(dataset = "CA16")
+
+regions_filtered <-  regions %>% 
+  filter(level == "CSD") %>% # Figure out what CSD means in Census data
+  as_census_region_list()
+
+# This can take a while
+# We want to get household median income
+census_data_csd <- get_census(dataset='CA16', regions = regions_filtered,
+                          vectors=c("v_CA16_2397"), 
+                          level='CSD', geo_format = "sf")
+
+# Simplify to only needed variables
+median_income <- census_data_csd %>% 
+  as_tibble() %>% 
+  select(CSDuid = GeoUID, contains("median"), Population) %>% 
+  mutate(CSDuid = parse_number(CSDuid)) %>% 
+  rename(hhld_median_inc = 2)
+median_income
+```
+
+```{r}
+#install.packages("haven")
+library(haven)
+dataset = read_sav("data-raw/pccfNat_fccpNat_082021sav.sav")
+
+postcode <- dataset %>% 
+  select(PC, CSDuid) %>% rename(c("postcode" = "PC"))
+postcode
+```
+
+```{r}
+#clean the postcode data and combine with median_income by CSDuid
+postcode_income <- postcode %>% distinct(postcode,.keep_all = TRUE) %>% left_join(median_income, by="CSDuid")
+
+# combine customer, device and postcode_income data 
+colnames(device_data)[1] <- "device_name"
+customer_inf <- customer %>% left_join(cust_dev, by="cust_id") %>% left_join(device, by= "dev_id") %>% left_join(postcode_income, by ="postcode") %>% left_join(device_data, by="device_name")
+
+#mutate two new variable age, skin and new_cunstomer in the customer_inf data 
+customer_inf <- customer_inf %>% mutate (age = 2022-as.numeric(substr(dob,1,4)),
+                                         skin = case_when(emoji_modifier == "U+1F3FF" ~ "dark",
+                                                          emoji_modifier == "U+1F3FD" ~ "medium",
+                                                          emoji_modifier == "U+1F3FC" ~ "medium-light",
+                                                          emoji_modifier == "U+1F3FB" ~ "light",
+                                                          emoji_modifier == "U+1F3FE"	~ "medium-dark",
+                                                          is.na(emoji_modifier) ~ "yellow"),
+                                         new_customer = as.factor(if_else(line %in% c("Advance","Active"),"new","traditional")))
+
+# delete the sex with NA and variables dob, pronouns and emoji_modifier
+customer_inf <- customer_inf %>% filter(sex %in% c("Female","Male")) %>% select(-dob, -pronouns, -emoji_modifier)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, include = TRUE, echo = FALSE ,fig.width=12, fig.height = 6, fig.cap= "The distribution of flags on customers skin"}
+
+# data join
+customer_sleep <- customer_inf %>% left_join(cust_sleep, by="cust_id") %>% filter(!is.na(flags)) %>% filter(!is.na(duration)) %>% mutate(flag = flags/duration) %>% mutate (product_age = as.numeric(difftime("2022-4-03", date)))%>% select (-cust_id,-Brand,-line,-released,-`Battery life`,-`Recommended retail price`,-`Water resitance`,-`Heart rate sensor`,-GPS,-`Sleep tracking`,-`Smart notifications`,-`Contactless payments`)
+
+ggplot(customer_sleep, aes(x=skin, y=flags/duration, fill = skin)) + geom_boxplot() + labs(x = "skin color", y = "Number of flags") +  scale_fill_brewer(palette="Pastel1") + theme_classic()
+
+```
+
+The box plots indicate the distribution of median occurrences of flags on different customers' skin. We can observe the significant difference between dark skin customers and other skin customers. The median flag occurrences of devices of dark skin customers are 0,03 times which is the highest, and the lowest median flag occurrences are 0.002 times which is the light skin customers' devices.
+
+
+\newpage
+# Technical report
+
+## Introduction
+
+Mingar company is now committed to developing wearable electronic products since the wearable market shows a growing trend. This company used to develop GPS units for military personnel. This company meets some products issue that many customers complain their device performance poorly for dark-skin customers. And they would like to investigate whether their devices show this issue. Our company will use provided data to analyze this and aim to find any other factors that can affect the device's performance. We exploratory the data analysis and observe any related factors that can affect data visualization's flag occurrences. Then, we use the related factors we conclude from the data visualization to construct models. We will set several models to compare and then determine the most appropriate model that can help us investigate whether their device performs poorly for dark-skin customers.   
+
+### Research questions
+_Use bullet points to to describe the research questions you are going to address. Write in full sentences._
+
+- Are devices performing poorly for dark skin customers and are there any other factors can effect the performance of devices? 
+
+## The performance of device for customers 
+
+_For each research question, you will want to briefly describe any data manipulation, show some exploratory plots/summary tables, report on any methods you use (i.e. models you fit) and the conclusions you draw from these_
+
+
+
+### Data manipulation
+
+The full customers' sleep data is created by joining the customer information data and partial users' sleep data. These two data contain the postcode of customers that we can join them by these variables. One of the research aims is to discover whether the skin can affect the flags occurrences of devices. We can determine the customers' skin depending on the emoji they use. Therefore, we divided customers skin into 6 levels: dark,medium,medium-light,light,medium-dark,yellow. The flag represents the device occurs errors in customers' sleep duration, which might be data missing, data quality issues, or other device issues. If we would like to research the device's performance for customers, we need to calculate the number of flag occurrences in sleep duration. Since each customer's sleep duration is different, it is inaccurate to compare the flags of devices. Thus, we need to calculate the number of flag occurrences per sleep duration that will be more accurate. Finally, the customers sleep data contains the postcode, device name, date of sleep session started, the duration of sleep in minutes, flag occurrences, customers sex, income and age. 
+
+### Data description 
+
+Variable |Variable type|Description|
+-------------|-----------|--------------------------------------------|
+CSDuid |Character| The virtual postcode of customer|
+sex |Character|Biological sex|
+skin | Character |The customers skin |
+device_name |Character|The device name of devices in this company|
+duration|Numeric|Duration, in minutes, of sleep session|
+flags|Numeric|Number of times there was a quality flag during the sleep session. Flags may occur due to missing data, or due to data being recorded but sufficiently unusual to suggest it may be a sensor error or other data quality issue|
+
+
+### Data exploratory plots/summary tables
+
+
+```{r, message=FALSE, warning=FALSE, include = TRUE, echo = FALSE ,fig.width=12, fig.height = 6, fig.cap= "The distribution of flags on customers skin"}
+
+
+ggplot(customer_sleep, aes(x=skin, y=flags/duration, fill = skin)) + geom_boxplot() + labs(x = "skin color", y = "Number of flags") +  scale_fill_brewer(palette="Pastel1") + theme_classic()
+
+```
+
+The box plots indicate the distribution of median occurrences of flags on different customers' skin. We can observe the significant difference between dark skin customers and other skin customers. The median flag occurrences of devices of dark skin customers are 0,03 times which is the highest, and the lowest median flag occurrences are 0.002 times which is the light skin customers' devices. By comparing the interquartile ranges, the interquartile range for dark skin customers is more significant than others, especially the light skin customers interquartile range. For dark skin, the larger the interquartile range the flag occurrences data dispersed widely and shows the symmetric distribution. By contrast, the interquartile range of light-skin customers is smaller, representing the flag occurrences data for light-skin customers' devices less dispersed and showing the right-skewed distribution. Most of the flag occurrences are less dispersed and show the right-skewed distribution. Thus, the box plot indicates the approximate data distribution and can reflect the difference in device performance for different skin customers. 
+
+
+```{r,include = TRUE, echo = FALSE}
+
+
+## Summary table of flag occurrences for each skin
+knitr::kable(customer_sleep%>%
+  group_by(skin)%>%
+  summarise(mean = mean(flag)),caption = "Table 2. The occurrences of flag per duration for each skin",col.names = c("Skin of custmers","Number of flag occurrences per duration"))
+```
+
+Table summarizes the flag occurrences per duration on different customers' skin. According to the table, dark skin customers' devices possible performance 0.033 flags per sleep duration and almost 0.02 flag occurrences of medium-dark skin customers. However, the light-skin users' device will only perform a 0.003 flag per sleep duration and 0.066 flag occurrences for medium-light skin customers. By comparison, customers with dark skin have the highest flags occurrences per sleep duration, and customers with light skin show the lowest flag occurrences per sleep duration. There is a significant difference and almost a tenfold difference between dark skin users' devices and light skin users' devices. Thus, we can consider that the devices may perform poorly for dark skin customers, but we cannot rule out any other factors that can affect device performance also. 
+
+
+
+
+
+```{r,  include = TRUE, echo = FALSE, message=FALSE, warning=FALSE, fig.width= 12, fig.height= 6, fig.cap= "The distribution of flags on different devices"}
+library(ggplot2)
+library(gridExtra)
+library(grid)
+
+ggplot(customer_sleep, aes(x=device_name, y=flag, fill = device_name)) + geom_boxplot() + labs(x = "device name", y = "Number of flags") +  scale_fill_brewer(palette="Pastel1") + theme_classic()
+```
+
+These box plots show the distribution of flag occurrences of different devices. Obviously, the device of Run 7 shows the highest median flag occurrences, and other devices show similar median flag occurrences. The Run 7 device shows round 0.035 flag occurrences per sleep duration, and other devices show round 0.008 flag occurrences per sleep duration. Moreover, flag data of Run 875 device disperse more than other devices' flag occurrences data since the interquartile range is larger than other devices. For the Run 7 device, the data distribute symmetric, and other devices flag data showing right-skewed distribution. Thus, we can assume the different device shows different flag occurrences, and the Run 7 device may be performing poorly (shows flag occurrences highly) for customers.    
+
+
+```{r, include = TRUE, echo = FALSE, message=FALSE, warning=FALSE, fig.width= 14, fig.height= 10, fig.cap= "The distribution of customers skin on different devices"}
+
+library(dplyr)
+library(scales)
+library(ggplot2)
+
+bar_device <- customer_sleep%>%
+  ggplot(aes(x=device_name, y=flag, fill= skin)) + geom_bar(stat = "identity") + labs(x = "Device", y = "Number of devices sold")
+
+
+Device_per <- customer_sleep %>% 
+  select(cust_id,device_name, skin)%>%
+  filter(device_name== "Run 7") %>% 
+  group_by(skin) %>% count()%>%
+  mutate(perc = n / 23)%>%
+  mutate(labels = scales::percent(perc))
+Device_per_pie <- ggplot(Device_per, aes(x="", y=n, fill=skin))+
+  geom_col() +
+  geom_text(aes(label = labels),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y")+
+  labs(y = "Number") +  scale_fill_brewer(palette="Pastel2")
+
+#grid.arrange(bar_device,flag_chart2,Device_per_pie, nrow=2, ncol=2)
+grid.arrange(bar_device, Device_per_pie,nrow=2)
+
+```
+
+The figure contains a bar plot of devices and a pie chart of device Run 7. This bar plot shows that dark-skin customers occupied more on most devices than other skin customers. By comparing the distribution of skin customers on each device, we found that the Advance 2 has the highest sales and dark-skin and medium-dark customers occupied the most significant proportion, around 30% respectively. Moreover, there are some devices sold less. For the iDoL device, medium-dark customers prefer to buy this product, and it seems like only dark-skin customers buy the Run 7 device.
+Moreover, we know that Run 7 shows the largest median flag occurrences per sleep duration from the above box plot and devices performing poorly for dark-skin customers. Thus, we would like to know whether only dark-skin customers purchase the Run 7 device by the pie chart. From the pie chart, we know that it is true that only dark-skin customers purchase the Run 7 device.
+
+```{r, include = TRUE, echo = FALSE, warning=FALSE, message=FALSE, fig.cap= "The distribution of sleep duration of devices"}
+#install.packages("ggrepel")
+library(ggrepel)
+
+customer_sleep %>% ggplot(aes(x= duration, fill = device_name)) + geom_density(alpha = 0.2) +
+  labs(x = "The sleep duration of customers", y = "Density")+ theme(plot.caption = element_text(hjust = 0.5, size = rel(1.2)))
+
+
+```
+
+
+The density plot indicates the density of the flag on each device. It is noticed that the peak of density for all device are around 380 minutes, and all devices are unimodal and contain only one peak, and show symmetric shape. We can observe that the Run 7 and Run 7 plus device show smaller variation of duration data, and other devices show a large variation in customers' sleep duration.
+
+
+```{r, include = TRUE, echo = FALSE, warning=FALSE, message=FALSE, fig.cap= "The number of flag occurrence in sleep duration"}
+flag_duration <- customer_sleep %>%
+  group_by(postcode) %>%
+  summarise(mean_flag = mean(flags, na.rm = T),
+            mean_d = mean(duration,na.rm = T)) %>%
+  ungroup()
+flag_duration %>%
+  ggplot(aes(x=mean_d, mean_flag)) +geom_point( color = "#7FB3D5", fill = "#7FB3D5", pch = 25) + geom_label_repel(data = flag_duration, aes(label = postcode)) +
+  theme_minimal() +
+  labs(x = "The duration of sleep", y = "The number of flag occurrence")+ theme(plot.caption = element_text(hjust = 0.5, size = rel(1.2)))
+
+```
+
+The plot distributes the mean sleep duration and the flag occurrences in different areas. The postcode represents the customers' living area. We can observe a positive increasing trend that the number of flag occurrences will increase with the increase in sleep duration. It is noticed that customers living in different areas show similar sleep duration. In general, the customers who live in the same postcode represent they may have similar incomes and skin. Thus, we can assume the postcode can also be one factor that can affect the flag occurrences.  
+
+
+```{r, include = TRUE, echo = FALSE, message=FALSE, warning=FALSE, fig.cap= "The distribution of customers sex for devices and number of flag occurrence"}
+customer_sleep%>%
+  ggplot(aes(x=sex, y=flag, fill = device_name)) + geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "The sex of customers", y = "The number of flag occurrence",caption = "Created by Datanaly.Inc company, Winter 2022")
+```
+
+The bar plot shows the flag occurrences on customers' sex and contains the device occupation. It is obviously that the female customers' devices show more flag occurrences than male customers' devices. For female customers' devices, almost 140 flags occurred, and the Advance 2 device occupied more flag occurrences than other devices. For male customers, there are around 95 flags appeared, and the Advance 2 device also occupied more flag occurrences. By this comparison, we can assume that sex can be one of the factors that can influence flag occurrence and prove that different devices show different numbers of flag occurrences. The devices can also be one of the factors that can affect the flag occurrence.
+
+\newpage 
+
+## Model set up
+```{r, warning=FALSE, message=FALSE}
+# mod 1 with skin and random intercept 
+mod2_1 <- glmer(flags~ skin + (1|CSDuid),offset=log(duration),family=poisson,data=customer_sleep)
+# mod 1 with skin ,device_name and random intercept
+mod2_2 <- glmer(flags~ skin + device_name + (1|CSDuid), offset=log(duration), family=poisson, data=customer_sleep)
+
+mod2_3 <- glmer(flags~ skin + device_name  + product_age + (1|CSDuid), offset=log(duration), family=poisson, data=customer_sleep)
+
+mod2_4 <- glmer(flags~ skin + product_age  + device_name  + sex + (1|CSDuid), offset=log(duration), family=poisson, data=customer_sleep)
+
+# compare models 
+lmtest::lrtest(mod2_1,mod2_2)
+lmtest::lrtest(mod2_2,mod2_3)
+lmtest::lrtest(mod2_2,mod2_4)
+
+# summary the best model 
+summary(mod2_2)
+```
+
+
+We can use the model to discover any factors that can influence the device performance. We would like to research what factors can affect the number of flag occurrences. Thus, we set the flag occurrences per sleep duration as the response variables and use the Poisson distribution. Moreover, we would like to include the customers' skin, sex, device as the factors and we use customers' id represent the virtual postcode since the postcode are customers' privacy and too specific. We consider the virtual postcode are not independent variables. Then, we set the customers' id (virtual postcode) as random intercept and the response variable is not follows normal distribution. Thus, we need to use the **Generalized Linear Mixed Model**. \
+
+We set several models that contains different factors and they are nested with other models. In order to select the most appropriate model, we use likelihood ratio test to compare these models and then determined the final model. The likelihood ratio test can help use determined the "best" model between the two nested models. We set 5 models that model 1 be the simplest model and add factors for the following models one by one that can include all factors may will effect flag occurrences we discussed above . For all models, we set the number of flag occurrences as the response variable. For model 1, we only include the customers' skin as the fixed effect and the virtual postcode as the random effect. Then, we add the device  as the fixed effect for model 2 since we observed above that the flag occurrences shows different in different device. For model 3, we include the product age as fixed effect which is total time of sleep session of device. For model 4, we include the customers' sex as fixed effect since we observed the difference of flag occurrences between female and male customers. 
+
+#### Summary table of likelihood ratio test 
+
+Model comparison |Result of likelihood ratio test| Best model|
+-----------------|-------------------------------|-----------|
+Model 1 & Model 2|p-value: 0.005675 (< 0.05) | Model 2|
+Model 2 & Model 3|p-value: 0.5407 (< 0.05)| Model 2|
+Model 2 & Model 4|p-value: 0.6827 (> 0.05)| Model 2|
+
+Then table shows the result of model comparison. Since likelihood ratio test only can compare two nested model, we only can compare two models step by step. By compare the model 1 and model 2, the p-value is 0.01029 which is smaller than 0.05. Thus, the model 2 is more appropriate which means the device is an important factor that can affect the flag occurrence and different device occurs different number of flag and. We keep compare model 2 and model 3, but we found the appropriate model still be model 2. Thus, we consider the product age is not the important factor that can influence the device performance. Finally, we compare the model 2 and model 4 since model 2 is the best model in previous comparison. And then, we found that the model 2 still be the most appropriate model and the customers' sex also is not the important factor that can affect the device performance. Thus, the model 3 is our final model. The final model contains fixed effects (customers' skin, device) and random effect (virtual postcode). 
+
+
+#### Summary table of final model
+
+ Factors | Estimate |Std. Error | Pr(>|z|) |
+---------|----------|-----------|----------|
+Intercept | -3.423645 | 0.011916 | < 2e-16 *** |
+skin light | -2.392389 | 0.016511 | < 2e-16 *** |
+skin medium | -1.209982 | 0.011308 | < 2e-16 *** |
+skin medium-dark | -0.501080 | 0.009082 | < 2e-16 *** |
+skin medium-light |-1.616847 | 0.012790 | < 2e-16 *** |
+skin yellow | -1.630688 | 0.010630 | < 2e-16 *** |
+device: Advance | 0.043088 | 0.014833 | 0.00367 ** |
+device: Advance 2 | 0.016230 | 0.012257 | 0.18546 |  
+device: iDOL | 0.069193 | 0.063690 | 0.27730 |  
+device: Run 7 | 0.079534 | 0.056736 | 0.16097 |  
+device: Run 7 Plus | -0.112884 | 0.092448 | 0.22207 |   
+device: Run 875 | 0.051073 | 0.023005 | 0.02642 * | 
+device: Run 875 X | 0.129918 | 0.043507 | 0.00283 ** |
+device: Run BE | 0.028928 | 0.013394 | 0.03078 * |
+device: Run ON | 0.031711 | 0.013182 | 0.01615 * |
+
+
+$$log(\frac{E(flags)}{duration}) = \beta_0 + \beta_1skin:light + \beta_2skin:medium + \beta_3skin:medium\_dark + \beta_4skin:medium\_light + $$
+$$\beta_5skin:yellow + \beta_6device: Advance + \beta_7device: Advance2 +  \beta_8device: iDOL + \beta_{9}device: Run 7 +$$
+$$ \beta_{10}device: Run 7 Plus + \beta_{11}device: Run 875 + \beta_{12}device: Run 875 X + $$
+$$\beta_{13}device: Run BE + \beta_{14}device: Run ON + U_i$$
+
+
+- $\frac{flags}{duration}$: The number of flag occurrences per duration. \
+
+- $\beta_0$: The expect value of flag occurrences per duration is 0.033 for the dark skin customers with device Active Alpha. 
+\
+
+- $\beta_1$: The mean of flag occurrences per duration for light skin customers with device Active Alpha is 0.091 times of the mean for the dark skin customers with device Active Alpha during the same duration period. Thus, the mean of the flag occurrences per duration for light skin customers with device Active Alpha is 0.003303. 
+\
+
+- $\beta_2$: The mean of flag occurrences per duration for medium skin customers with device Active Alpha is 0.298 times of the mean for the dark skin customers with device Active Alpha during the same duration period. Thus, the mean of the flag occurrences per duration for medium skin customers with device Active Alpha is 0.009834.
+\
+
+- $\beta_3$: The mean of flag occurrences per duration for medium dark skin customers with device Active Alpha is 0.606 times of the mean for the dark skin customers with device Active Alpha during the same duration period. Thus, the mean of the flag occurrences per duration for medium dark skin customers with device Active Alpha is 0.19998.
+\
+
+- $\beta_4$: The mean of flag occurrences per duration for median light skin customers with device Active Alpha is 0.199 times the mean for the dark skin customers with device Active Alpha during the same duration period. Thus, the mean of the flag occurrences per duration for median light skin customers with device Active Alpha is 0.006567.
+\
+
+- $\beta_5$: The mean of flag occurrences per duration for yellow skin customers with device Active Alpha is 0.196 times the mean for the dark skin customers with device Active Alpha during the same duration period.\
+
+- $\beta_6$: The mean of flag occurrences per duration for dark skin customers with device Advance is 1.044 times the mean for the dark skin customers with device Active Alpha during the same duration period.\
+
+- $\beta_7$: The mean of flag occurrences per duration for dark skin customers with device Advance 2 is 1.016 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_8$: The mean of flag occurrences per duration for dark skin customers with device iDOL is 1.072 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_9$: The mean of flag occurrences per duration for dark skin customers with device Run 7 is 1.083 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_{10}$: The mean of flag occurrences per duration for dark skin customers with device Run 7 Plus is 0.893 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_{11}$: The mean of flag occurrences per duration for dark skin customers with device Run 875 is 1.052 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_{12}$: The mean of flag occurrences per duration for dark skin customers with device Run 875 X is 1.139 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_{13}$: The mean of flag occurrences per duration for dark skin customers with device Run BE is 1.029 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $\beta_{14}$: The mean of flag occurrences per duration for dark skin customers with device Run ON is 1.032 times the mean for the dark skin customers with device Active Alpha during the same duration period. \
+
+- $U_i$: The random effects follows $N(0,\sigma_u^2)$ \ 
+
+
+
+## Discussion
+
+By the research above, we find that, with the same duration and the same device, there are more flag occurrences as the color of skin darkens. Therefore, indeed, our device does not work well on dark skin customers. And in the process of data analysis, we found that the average flag occurrences of the device RUN 7 is significantly higher than that of other devices. But we know from the summary of the model that all types of devices have a similar effect on flag appearances. We also found in the pie chart that 100% of the customers who bought run7 were dark skin people. So it may because our device work poorly on dark skin, and the users of RUN 7 are all with dark skin, which causes the average flag occurrences of RUN 7 to be higher than other devices.
+
+
+
+### Strengths and limitations
+During this research, we not only answered the questions required by client, we also conducted further exploration of the data, for example, we found that RUN 7 has more flag occurrences. Then we did research on the issues we found and gave some explanation on them. We believe in this way, we can better help our clients to find out the potential problems in their product.
+
+When we research whether the device is performing poorly for dark-skin customers, we use the emoji to determined the customers' skin. It might occurs some mislead since some customers are not set the skin color of emoji. Thus, we cannot misidentified these groups customers skin and we classify them as yellow-skin. This may will cause our estimate model less accurate than the model
+
+\newpage
+# Consultant information
+## Consultant profiles
+
+**Xiaoqing Chen**. Xiaoqing Chen is the senior consultant with Eminence Analytics. She is specializes in model construction and data visualization. In 2023, she get Bachelor of Science, major in Statistics and Genetic application from Univeristy of Toronto. 
+
+Statsy is a senior consultant with Eminence Analytics. She specializes in data visualization. Statsy earned her Bachelor of Science, Specialist in Statistics Methods and Practice, from the University of Toronto in 2023.
+
+**Jiahao Li **. Jiahao Li is a junior consultant with Eminence Analytics. He specialize in reproducible analysis and model analysis. Jiahao Li earned his Bachelor of Science, Majoring in Statistic, Mathematics and Economics from the University of Toronto in 2023.
+
+## Code of ethical conduct
+
+
+
+- Our company take job responsibility and provide objective and reliable information on any professional review or evaluation procedures. \
+
+- The most important ethic for our company is that We comply with relevant privacy laws or privacy standards established by the SSC or other relevant bodies and we strictly follow the procedures to protect human rights and dignity. \
+
+- The statistical practitioners in our company are ethical that they will not misuse or condone the misuse of data and they are responsible to protect and respect human rights and animal subjects. \
+
+- Our company will remain objective and strive to avoid procedural or personal bias. We believe that building effective data-based information is critical to informed public opinion and policy.
+
+
+
+\newpage
+# References
+
+1. Grolemund, G. (2014, July 16) *Introduction to R Markdown*. RStudio. <https://rmarkdown.rstudio.com/articles_intro.html>. (Last Accessed: October 12, 2021) 
+
+2. Dekking, F. M., et al. (2005) *A Modern Introduction to Probability and Statistics: Understanding why and how.* Springer Science & Business Media.
+
+3. Allaire, J.J., et. el. *References: Introduction to R Markdown*. RStudio. <https://rmarkdown.rstudio.com/docs/>. (Last Accessed: October 12, 2021)
+
+4. Douglas Bates, Martin Maechler, Ben Bolker, Steve Walker (2015). Fitting Linear Mixed-Effects Models Using lme4. Journal of Statistical Software, 67(1), 1-48. doi:10.18637/jss.v067.i01.
+
+5. Hadley Wickham (2021). rvest: Easily Harvest (Scrape) Web Pages. R package version 1.0.2. <https://CRAN.R-project.org/package=rvest> 
+
+6. Dmytro Perepolkin (2019). polite: Be Nice on the Web. R package version 0.1.1. <https://CRAN.R-project.org/package=polite>
+
+7. Achim Zeileis, Torsten Hothorn (2002). Diagnostic Checking in Regression Relationships. R News 2(3), 7-10. URL <https://CRAN.R-project.org/doc/Rnews/>
+
+8. Hadley Wickham and Evan Miller (2021). haven: Import and Export 'SPSS', 'Stata' and 'SAS' Files. R package version 2.4.3. <https://CRAN.R-project.org/package=haven>
+
+9. von Bergmann, J., Dmitry Shkolnik, and Aaron Jacobs (2021). cancensus: R package to access, retrieve, and work with Canadian Census data and geography. v0.4.2.
+
+10. H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+11. Baptiste Auguie (2017). gridExtra: Miscellaneous Functions for "Grid" Graphics. R package version 2.3. <https://CRAN.R-project.org/package=gridExtra>
+
+12. R Core Team (2022). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL <https://www.R-project.org/.>
+
+13. Hadley Wickham, Romain Fran?ois, Lionel Henry and Kirill Müller (2022). dplyr: A Grammar of Data Manipulation. R package version 1.0.8. <https://CRAN.R-project.org/package=dplyr>
+
+14. Hadley Wickham and Dana Seidel (2020). scales: Scale Functions for Visualization. R package version 1.1.1. <https://CRAN.R-project.org/package=scales>
+
+15. H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+16. Kamil Slowikowski (2021). ggrepel: Automatically Position Non-Overlapping Text Labels with 'ggplot2'. R package version 0.9.1. <https://CRAN.R-project.org/package=ggrepel>
+
+17. GGPLOT2 point shapes. STHDA. (n.d.). Retrieved April 6, 2022, from <http://www.sthda.com/english/wiki/ggplot2-point-shapes>
+
+18. Color chart. HTML Color Codes. (n.d.). Retrieved April 6, 2022, from <https://htmlcolorcodes.com/color-chart/>
+
+19. GGPLOT2 - easy way to mix multiple graphs on the same page. STHDA. (n.d.). Retrieved April 6, 2022, from <http://www.sthda.com/english/wiki/wiki.php?id_contents=7930>
+
+20. Yihui Xie, C. D. (2022, February 18). R markdown cookbook. 5.4 Control the size of plots/images. Retrieved April 6, 2022, from <https://bookdown.org/yihui/rmarkdown-cookbook/figure-size.html>
+
+21. Mcleod, S. (2019, July 19). Box plots (also known as box and Whister plots). Box Plot | Simply Psychology. Retrieved April 6, 2022, from <https://www.simplypsychology.org/boxplots.html>
+
+\newpage
+# Appendix
+
+_These appendices should outline in more detail the steps taken to access the following datasets. They should NOT include code, but should briefly describe the steps and important considerations. I.e., show that you understand what needs to be considered when web scraping, protecting licensed data, etc._
+
+## Web scraping industry data on fitness tracker devices
+
+## Accessing Census data on median household income
+
+## Accessing postcode conversion files
+
+
+__Final advice: KNIT EARLY AND OFTEN!__
