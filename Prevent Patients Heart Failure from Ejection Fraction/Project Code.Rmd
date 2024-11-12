@@ -1,0 +1,455 @@
+---
+title: "Part3"
+output: html_document
+---
+
+```{r,echo=FALSE, include=FALSE}
+library(dplyr)
+library(tidyverse) 
+library(broom)
+library(gridExtra)
+library(car)
+library(patchwork)
+library(MASS)
+data1=read.csv("heart_failure_clinical_records_dataset.csv")
+heart_failure <- data1 %>% mutate(Smoke = ifelse(data1$smoking == "1","Yes","No"))
+heart_failure <- heart_failure %>% mutate(Sex = ifelse(data1$sex == "1","Male","Female"))
+heart_failure <- heart_failure %>% mutate(High_blood_pressure = ifelse(data1$high_blood_pressure == "1","Yes","No"))
+heart_failure <- heart_failure %>% mutate(Diabetes = ifelse(data1$diabetes == "1","Yes","No"))
+heart_failure <- heart_failure %>% mutate(Anaemia = ifelse(data1$anaemia == "1","Yes","No"))
+```
+
+## Training and Testing data
+```{r}
+set.seed(697)
+n <- nrow(heart_failure)
+training_indices <- sample(1:n, size= round(0.80*n))
+heart_failure <- heart_failure %>% rowid_to_column()
+train <- heart_failure %>% filter(rowid %in% training_indices)
+test <- heart_failure %>% filter(!(rowid %in% training_indices))
+```
+
+##Numerical variable 
+
+
+
+```{r}
+box_ejection_fraction <- train %>%
+ggplot(aes(y=ejection_fraction)) +
+geom_boxplot(color='black', fill= 'steelblue') +
+labs(title="Ejection Fraction")
+
+```
+
+```{r}
+box_platelets <- train %>%
+ggplot(aes(y=platelets)) +
+geom_boxplot(color='black', fill= 'steelblue') +
+labs(title="Platelets ")
+
+```
+
+```{r}
+plot(train$ejection_fraction ~ train$platelets, main=" Ejection Fraction vs Platelets ", xlab="Platelets", ylab="Ejection Fraction")
+```
+
+```{r}
+box_serum_creatinine <- train %>%
+ggplot(aes(y=serum_creatinine)) +
+geom_boxplot(color='black', fill= 'steelblue') +
+labs(title="Serum Creatinine ")
+
+```
+
+```{r}
+plot(train$ejection_fraction ~ train$serum_creatinine, main=" Ejection Fraction vs Serum Creatinine ", xlab="Serum Creatinine", ylab="Ejection Fraction")
+```
+
+```{r}
+box_creatinine_phosphokinase <- train %>%
+ggplot(aes(y=creatinine_phosphokinase)) +
+geom_boxplot(color='black', fill= 'steelblue') +
+labs(title="Creatinine Phosphokinase ")
+
+```
+
+```{r}
+plot(train$ejection_fraction ~ train$creatinine_phosphokinase, main=" Ejection Fraction vs Creatinine Phosphokinase ", xlab="Creatinine Phosphokinase", ylab="Ejection Fraction")
+```
+
+```{r}
+box_Age <- train %>%
+ggplot(aes(y=age)) +
+geom_boxplot(color='black', fill= 'steelblue') +
+labs(title="Age")
+
+```
+
+```{r}
+plot(train$ejection_fraction ~ train$age, main=" Ejection Fraction vs Age ", xlab="Age", ylab="Ejection Fraction")
+```
+
+## Summary Numerical 
+```{r}
+(box_ejection_fraction | box_platelets | box_serum_creatinine) /
+(box_creatinine_phosphokinase | box_Age)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(train$ejection_fraction ~ train$platelets, main=" Ejection Fraction vs Platelets ", xlab="Platelets", ylab="Ejection Fraction")
+plot(train$ejection_fraction ~ train$serum_creatinine, main=" Ejection Fraction vs Serum Creatinine ", xlab="Serum Creatinine", ylab="Ejection Fraction")
+plot(train$ejection_fraction ~ train$creatinine_phosphokinase, main=" Ejection Fraction vs Creatinine Phosphokinase ", xlab="Creatinine Phosphokinase", ylab="Ejection Fraction")
+plot(train$ejection_fraction ~ train$age, main=" Ejection Fraction vs Age ", xlab="Age", ylab="Ejection Fraction")
+```
+
+
+
+
+```{r}
+summary(train$ejection_fraction)
+summary(train$platelets)
+summary(train$serum_creatinine)
+summary(train$creatinine_phosphokinase)
+summary(train$age)
+
+```
+
+
+## Calaterical 
+```{r}
+bar_anaemia <- train %>%
+ggplot(aes(x=Anaemia)) +
+geom_bar(color='black', fill='steelblue') +
+labs(title="Anaemia") +
+coord_flip()
+```
+
+```{r}
+bar_high_blood_pressure <- train %>%
+ggplot(aes(x=High_blood_pressure)) +
+geom_bar(color='black', fill= 'steelblue') +
+labs(title="High Blood Pressure") +
+coord_flip()
+```
+
+```{r}
+bar_sex <- train %>%
+ggplot(aes(x=Sex)) +
+geom_bar(color='black', fill= 'steelblue') +
+labs(title="Sex") +
+coord_flip()
+```
+
+```{r}
+bar_smoking <- train %>%
+ggplot(aes(x=Smoke)) +
+geom_bar(color='black', fill= 'steelblue') +
+labs(title="Smoking") +
+coord_flip()
+```
+
+```{r}
+bar_diabetes <- train %>%
+ggplot(aes(x=Diabetes)) +
+geom_bar(color='black', fill= 'steelblue') +
+labs(title="Diabetes") +
+coord_flip()
+```
+
+```{r}
+table(train$Anaemia)
+table(train$Smoke)
+table(train$High_blood_pressure)
+table(train$Diabetes)
+table(train$Sex)
+```
+
+
+## Summary Cate
+
+```{r}
+(bar_anaemia | bar_high_blood_pressure | bar_diabetes) /
+(bar_sex | bar_smoking) 
+```
+
+
+
+
+##full model 
+## Set the model 
+```{r}
+full_model <- lm(ejection_fraction ~ platelets + serum_creatinine + creatinine_phosphokinase + age + Anaemia + High_blood_pressure + Sex + Smoke + Diabetes, data = train)
+```
+
+
+```{r}
+vif(full_model)
+```
+
+
+## Condiction1 and Condiction2 
+
+```{r}
+#condition 1 
+yhat <- fitted(full_model)
+yi <- train$ejection_fraction
+ggplot()+geom_point(aes(y=yhat,x=yi))+ylim(20,80)
+```
+
+```{r}
+#condition 2
+pairs(~platelets + serum_creatinine + creatinine_phosphokinase + age, data=train)
+```
+
+##Drew the Residual Plot
+
+```{r}
+res <- rstandard(full_model)
+y_hat <- fitted(full_model)
+plot(y_hat, res)
+```
+
+
+```{r}
+## Residual vs. Predictors
+par(mfrow = c(3, 3))
+res <- rstandard(full_model)
+y_hat <- fitted(full_model)
+plot(y_hat, res)
+plot(train$platelets, res)
+plot(train$serum_creatinine, res)
+plot(train$creatinine_phosphokinase, res)
+plot(train$age, res)
+qqnorm(res)
+qqline(res)
+```
+
+##qq plot full model 
+```{r}
+qqnorm(res)
+qqline(res)
+```
+
+## outlier
+
+```{r}
+r <- rstandard(full_model)
+out <- which(r > 2 | r < -2)
+out
+
+```
+
+##leverage points
+
+```{r}
+h <- hatvalues(full_model)
+threshold <- 2 * (length(full_model$coefficients)/nrow(train))
+w <- which(h > threshold)
+train[w,]
+
+```
+
+```{r}
+D <- cooks.distance(full_model)
+cutoff <- qf(0.5, length(full_model$coefficients), nrow(train)-length(full_model$coefficients), lower.tail=T)
+which(D > cutoff)
+fits <- dffits(full_model)
+```
+
+
+## Summary full model 
+```{r}
+summary(full_model)
+```
+
+
+
+
+## 为什么用 random selection
+
+## reduce model 
+## AIC Select Reduce Model
+```{r}
+stepAIC(lm(ejection_fraction ~ platelets + serum_creatinine + creatinine_phosphokinase + age + Anaemia + High_blood_pressure + Sex + Smoke + Diabetes,data=train), direction = "both", k=2)
+```
+
+##Set reduce model 
+```{r}
+reduce_model <- lm(ejection_fraction ~ platelets + Sex + Diabetes, data = train)
+```
+
+
+```{r}
+summary(reduce_model)
+```
+
+```{r}
+#condition 1 
+yhat <- fitted(reduce_model)
+yi <- train$ejection_fraction
+ggplot()+geom_point(aes(y=yhat,x=yi))+ylim(15,80)
+```
+##Condiction2 (Since full model is satisfy, the reduce model also satisfy.)
+
+
+```{r}
+vif(reduce_model)
+```
+
+##Drew the Residual Plot 
+
+```{r}
+res <- rstandard(reduce_model)
+y_hat <- fitted(reduce_model)
+plot(y_hat, res)
+```
+
+
+```{r}
+## Residual vs. Predictors
+plot(train$platelets, res)
+```
+
+```{r}
+par(mfrow=c(2,2))
+res <- rstandard(reduce_model)
+y_hat <- fitted(reduce_model)
+plot(y_hat, res)
+plot(train$platelets, res)
+qqnorm(res)
+qqline(res)
+```
+
+```{r}
+r <- rstandard(reduce_model)
+out <- which(r > 2 | r < -2)
+out
+```
+
+```{r}
+h <- hatvalues(reduce_model)
+threshold <- 2 * (length(reduce_model$coefficients)/nrow(train))
+w <- which(h > threshold)
+train[w,]
+
+```
+
+```{r}
+D <- cooks.distance(reduce_model)
+cutoff <- qf(0.5, length(reduce_model$coefficients), nrow(train)-length(reduce_model$coefficients), lower.tail=T)
+which(D > cutoff)
+fits <- dffits(reduce_model)
+```
+
+##F-test (reduce model is better)
+
+```{r}
+anova(reduce_model,full_model)
+```
+
+
+```{r}
+AIC(full_model)
+AIC(reduce_model)
+summary(full_model)$adj.r.squared
+summary(reduce_model)$adj.r.squared
+BIC(full_model)
+BIC(reduce_model)
+```
+
+
+```{r}
+#influencial points for auto_model:
+D_auto <- cooks.distance(reduce_model)
+cutoff_auto <- qf(0.5, length(reduce_model$coefficients), nrow(train)-length(reduce_model$coefficients), lower.tail=T)
+which(D_auto > cutoff_auto)
+```
+
+
+## Get the test Model 
+
+```{r}
+test_model <- lm(ejection_fraction ~ platelets + Sex + Diabetes, data = test)
+```
+
+```{r}
+vif(test_model)
+```
+
+
+```{r}
+#condition 1 
+yhat <- fitted(test_model)
+yi <- test$ejection_fraction
+ggplot()+geom_point(aes(y=yhat,x=yi))+ylim(30,40)
+```
+
+##condiction2 
+
+##residual plot 
+```{r}
+res <- rstandard(test_model)
+y_hat <- fitted(test_model)
+plot(y_hat, res)
+```
+
+```{r}
+## Residual vs. Predictors
+plot(test$platelets, res)
+```
+
+
+```{r}
+par(mfrow=c(2,2))
+res <- rstandard(test_model)
+y_hat <- fitted(test_model)
+plot(y_hat, res)
+plot(test$platelets, res)
+qqnorm(res)
+qqline(res)
+```
+
+```{r}
+summary(test_model)
+```
+
+## estimate similar. 
+ 
+```{r}
+r <- rstandard(test_model)
+out <- which(r > 2 | r < -2)
+out
+
+```
+
+```{r}
+h <- hatvalues(test_model)
+threshold <- 2 * (length(test_model$coefficients)/nrow(train))
+w <- which(h > threshold)
+train[w,]
+
+```
+
+```{r}
+D <- cooks.distance(test_model)
+cutoff <- qf(0.5, length(test_model$coefficients), nrow(train)-length(test_model$coefficients), lower.tail=T)
+which(D > cutoff)
+fits <- dffits(test_model)
+```
+
+
+```{r}
+#predict
+pred <- predict(test_model, test)
+pred 
+```
+
+```{r}
+plot(pred ~ test$ejection_fraction)
+```
+
+
+
+
+
